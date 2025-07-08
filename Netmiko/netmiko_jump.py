@@ -1,15 +1,8 @@
 from netmiko import ConnectHandler
 from netmiko import redispatch
 
-#startup:
-#source venv/bin/activate
+#testing nested ssh
 
-#running:
-#python netmiko_test.py
-
-#closing:
-#pip freeze > requirements.txt
-#deactivate
 
 # Connect to router\
 router = ConnectHandler (

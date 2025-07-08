@@ -1,19 +1,11 @@
 from netmiko import ConnectHandler
 
-#startup:
-#source venv/bin/activate
-
-#running:
-#python netmiko_test.py
-
-#closing:
-#pip freeze > requirements.txt
-#deactivate
+#inital simple test
 
 # Define the device details
 device = {
     'device_type': 'cisco_ios',
-    'ip': '192.168.2.240',        # Update to match your router IP
+    'ip': '192.168.2.240',        
     'username': 'admin',
     'password': 'admin123',
 }
@@ -30,3 +22,4 @@ print(output2)
 
 # Close the connection
 net_connect.disconnect()
+
