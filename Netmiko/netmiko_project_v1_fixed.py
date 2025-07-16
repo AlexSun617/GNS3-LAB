@@ -4,6 +4,24 @@ from netmiko import redispatch
 import time
 import os
 import logging
+
+'''
+Fixed version as previous was unstable.
+
+Changes:
+
+1. Manually update base_prompt after every new ssh because netmiko wasnt doing it by default
+2. removed get hostname function as it was more efficient to grab the hostname ahead of time  
+   during the show cdp neighbors output. 
+
+Code works now and is stable.
+
+'''
+#tracks visited hosts by hostname so that we dont waste time on 
+#routers that we already visited.
+VISITED_HOSTS = {}
+
+#This is to capture debug log and save as a txt
 logging.basicConfig(
     filename="netmiko_session_log.txt",
     filemode="w",
@@ -11,15 +29,13 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
-VISITED_HOSTS = {}
-
 def send_command_safe(conn, command):
     return conn.send_command(
         command,
         expect_string=r"[>#]",
         strip_prompt=True,
         strip_command=True,
-        delay_factor=2,
+        delay_factor=0,
         read_timeout=60
     )
 
@@ -28,52 +44,37 @@ def send_command_timing_safe(conn, command):
         command,
         strip_prompt=True,
         strip_command=True,
-        delay_factor=2
+        delay_factor=0
     )
 
 def getNeighborAddresses(output):
     lines = output.splitlines()
-    ip_list = []
-    capture_ip = False
-
+    neighbors = []
+    current_hostname = None
+    current_ip = None
+    capture = False
     for line in lines:
-        if 'Capabilities:' in line:
-            if 'Router' in line:
-                capture_ip = True
-            else:
-                capture_ip = False
-        elif capture_ip and 'IP address:' in line:
-            parts = line.split('IP address:')
-            if len(parts) > 1:
-                ip = parts[1].strip()
-                ip_list.append(ip)
-                capture_ip = False
-    return ip_list
+        line = line.strip()
 
-def getHostname(conn):
-    try:
-        if not conn.is_alive():
-            print(f"Connection to {conn.host} is dead.")
-            return None
+        if line.startswith("Device ID: "):
+            line = line.split("Device ID: ")[1].strip()
+            current_hostname = line.split(".")[0]
 
-        conn.send_command("terminal length 0", expect_string=r"[>#]")
-        output = send_command_safe(conn, "show run | include ^hostname")
+        elif "IP address: " in line:
+            current_ip = line.split("IP address: ")[1].strip()
 
-        print(f"Hostname output on {conn.host}: {output}")
+        elif "Capabilities: " in line:
+            if "Router" in line:
+                capture = True
 
-        for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("hostname "):
-                hostname = line.split()[-1]
-                print(f"Extracted hostname: {hostname}")
-                return hostname
+        if current_hostname and current_ip and capture:
+            neighbors.append((current_hostname, current_ip))
+            current_hostname = None
+            current_ip = None
+            capture = False
 
-        print(f"Hostname not found in output: {output}")
-        return None
+    return neighbors
 
-    except Exception as e:
-        print(f"Failed to get hostname from {conn.host}: {e}")
-        return None
 
 def checkIfConfigured(output):
     return len(output.strip()) > 0
@@ -81,7 +82,7 @@ def checkIfConfigured(output):
 def configurations(conn):
     print("Configuring OSPF on all active interfaces")
     try:
-        conn.conn.send_config_set("router ospf 10", "end")
+        conn.send_config_set(["router ospf 10", "end"])
     except Exception as e:
         print(f"Error during configuration: {e}")
 
@@ -120,20 +121,7 @@ def configureAllRouters(conn, ipAddress):
     conn.write_channel('\n')
     conn.read_until_pattern(pattern=r"[>#]")
 
-    output = conn.read_channel()
-    print(f"debugging RAW OUTPUT from {ipAddress}]:\n{output}")
-    hostname = getHostname(conn)
-    if hostname is None:
-        print(f"Skipping router at {ipAddress} due to hostname retrieval failure.")
-        return
-
-    if hostname in VISITED_HOSTS:
-        print(f"Already visited {hostname}, skipping.\n")
-        return
-    else:
-        VISITED_HOSTS[hostname] = ipAddress
-        write_to_inventory(hostname, ipAddress)
-
+    
     output = send_command_timing_safe(conn, 'show running-config | section router ospf')
     if not checkIfConfigured(output):
         configurations(conn)
@@ -141,9 +129,12 @@ def configureAllRouters(conn, ipAddress):
     neighbor_output = send_command_timing_safe(conn, "show cdp neighbors detail")
     neighbors = getNeighborAddresses(neighbor_output)
 
-    for ip in neighbors:
-        print(f"SSHing onto {ip}")
-        configureAllRouters(conn, ip)
+    for neighbor in neighbors:
+        if neighbor[0] not in VISITED_HOSTS:
+            print(f"SSHing onto {neighbor[1]}")
+            VISITED_HOSTS[neighbor[0]] = neighbor[1]
+            configureAllRouters(conn, neighbor[1])
+        
 
     if conn.host != "192.168.2.240":
         conn.write_channel("exit\n")
@@ -151,9 +142,10 @@ def configureAllRouters(conn, ipAddress):
         redispatch(conn, device_type="cisco_ios")
         conn.session_preparation = lambda: None
         print(f"Redispatched and enabled on {ipAddress}")
-        time.sleep(3)
+
 
 def main():
+
     print(">>> RUNNING FIXED VERSION V1.3 <<<")
     inventory_path = os.path.join(os.path.dirname(__file__), "router_inventory.txt")
     open(inventory_path, "w").close()
@@ -168,10 +160,13 @@ def main():
     print(f"SSHing onto 192.168.2.240")
 
     router.enable()
-    time.sleep(1.5)
     router.find_prompt()
+    VISITED_HOSTS["R1"] = "192.168.2.240"
     configureAllRouters(router, "192.168.2.240")
+    
     router.disconnect()
+    for key, value in VISITED_HOSTS.items():
+        write_to_inventory(key, value)
 
 if __name__ == "__main__":
     main()
